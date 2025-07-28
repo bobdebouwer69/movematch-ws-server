@@ -12,11 +12,25 @@ import {
   PutCommand,
   DeleteCommand
 } from "@aws-sdk/lib-dynamodb";
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand
+} from "@aws-sdk/client-secrets-manager";
 
-// AWS + Cognito Configuration
+// Load secrets from AWS Secrets Manager
+const secretsClient = new SecretsManagerClient({ region: "eu-north-1" });
+const secretData = await secretsClient.send(
+  new GetSecretValueCommand({
+    SecretId: "movematch/websocket/env",
+  })
+);
+const secrets = JSON.parse(secretData.SecretString);
+
 const REGION = "eu-north-1";
-const USER_POOL_ID = "eu-north-1_IfaYIKV32";
-const CLIENT_ID = "c43ue096mnaupis7i4tu27hk1";
+const USER_POOL_ID = secrets.COGNITO_USER_POOL_ID;
+const CLIENT_ID = secrets.COGNITO_CLIENT_ID;
+const CONNECTIONS_TABLE = secrets.CONNECTIONS_TABLE;
+const MESSAGES_TABLE = secrets.MESSAGES_TABLE;
 
 // DynamoDB client
 const client = new DynamoDBClient({ region: REGION });
@@ -56,7 +70,7 @@ async function verifyToken(token) {
 const httpServer = http.createServer();
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", // Change to frontend domain in prod
+    origin: "*", // Change this in production
     methods: ["GET", "POST"],
   },
 });
@@ -78,10 +92,9 @@ io.on("connection", async (socket) => {
     return socket.disconnect(true);
   }
 
-  // Save connection in MoveMatchConnections
   await ddb.send(
     new PutCommand({
-      TableName: "MoveMatchConnections",
+      TableName: CONNECTIONS_TABLE,
       Item: {
         connectionId: socket.id,
         userId: userId,
@@ -89,7 +102,6 @@ io.on("connection", async (socket) => {
     })
   );
 
-  // Handle incoming messages
   socket.on("send_message", async ({ toUserId, message }) => {
     const conversationId = [userId, toUserId].sort().join("_");
 
@@ -104,12 +116,11 @@ io.on("connection", async (socket) => {
 
     await ddb.send(
       new PutCommand({
-        TableName: "Messages",
+        TableName: MESSAGES_TABLE,
         Item: item,
       })
     );
 
-    // Deliver message live if recipient is connected
     for (const [_, s] of io.sockets.sockets) {
       if (s.userId === toUserId) {
         s.emit("receive_message", item);
@@ -123,7 +134,7 @@ io.on("connection", async (socket) => {
     try {
       await ddb.send(
         new DeleteCommand({
-          TableName: "MoveMatchConnections",
+          TableName: CONNECTIONS_TABLE,
           Key: { connectionId: socket.id },
         })
       );
@@ -133,7 +144,6 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // Attach userId to socket object for reference
   socket.userId = userId;
 });
 
